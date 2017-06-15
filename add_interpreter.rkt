@@ -93,21 +93,6 @@
     (if (unsat? sol)
         'equal
         sol)))
-  
-  ;; Another hint: how do you make it so that the programs see the same inputs,
-  ;; but let them do different things to those inputs without interfering with
-  ;; each other? Remember, they mutate the state vector when they run!
-
-  ;; clone the vector for the second program
-  ;; clone the starting state, run both programs on the same starting input,
-  ;; compare them to check that they are equivalent in the end
-  ;; we want programs where the we check !=. If rosette can return a model where
-  ;; we assert that prog1 and prog2 states are not equal then the things is broken.
-
-  ;; we need to write vector clone copies to a new vector and returns it
-  ;; write a thing to compare to vectors for symbolic equality (same-state)
-  ;; unsat?
-  ;; unsat is good
 
 ;;TODO:
 ;; implment dan's test case
