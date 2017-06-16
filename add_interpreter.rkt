@@ -96,5 +96,6 @@
 
 ;;TODO:
 ;; implment dan's test case
+	;; add multiple registers
 ;; bigger long chainings of adds some add properties to test
 ;; comment code
