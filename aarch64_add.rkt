@@ -20,13 +20,9 @@
   (define-symbolic* i integer?)
   i)
 
-(define (symbolic-integer)
-  (define-symbolic* i integer?)
-  i)
-
 (define (symbolic-bv n)
   (define-symbolic* b (bitvector n))
-  i)
+  b)
 
 ;; For now, let's assume that the processor state is a vector of 31 64-bit bitvectors
 (define (symbolic-registers)
@@ -50,12 +46,130 @@
 (struct aarch64state (N Z C V regs) #:transparent)
 
 (define (step state prog)
-  'unimplemented)
+  (let* ([rd (extract 4 0 prog)]
+         [rn (extract 9 5 prog)]
+         [imm6 (extract 15 10 prog)]
+         [rm (extract 20 16 prog)]
+         [placeholder (extract 21 21 prog)]
+         [shift (extract 23 22 prog)]
+         [placeholder2 (extract 28 24 prog)]
+         [s (extract 29 29 prog)]
+         [op (extract 30 30 prog)]
+         [sf (extract 31 31 prog)]
+         [d (bitvector->natural rd)]
+         [n (bitvector->natural rn)]
+         [m (bitvector->natural rm)]
+         [datasize (if (= (bitvector->natural sf) 1)
+                       64
+                       32)]
+         [sub_op (= (bitvector->natural op) 1)]
+         [setflags (= (bitvector->natural s) 1)])
+    (if (= (bitvector->natural shift) 3)
+        'error
+        (if (and (= (bitvector->natural sf) 0) (= (bitvector->natural (extract 5 5 sf)) 1))
+            'error
+            (let* ([shift_amount (bitvector->natural imm6)]
+                   [operand1 (vector-ref (aarch64state-regs state) d)]
+                   [operand2 (if (= sub_op #t)
+                                 (bvnot (car (ShiftReg m shift shift_amount)))
+                                 (ShiftReg m shift shift_amount))]
+                   [carry_in (if (= sub_op #t)
+                                 (bv 1 1)
+                                 (bv 0 1))]
+                   [result (AddWithCarry operand1 operand2 carry_in)]
+                   [additionResult (car result)]
+                   [flagList (cdr result)])
+              (begin
+                (if (= setflags #t)
+                    (begin
+                      (set-aarch64state-N state (vector-ref flagList 0))
+                      (set-aarch64state-Z state (vector-ref flagList 1))
+                      (set-aarch64state-C state (vector-ref flagList 2))
+                      (set-aarch64state-V state (vector-ref flagList 3)))
+                    '())
+                (vector-set! state d additionResult)))))))
 
-;; Take a stab at filling this out. It will probably make sense to pull out things like
-;; decode and execute into separate functions. You can try to approximately follow the
-;; organization of the ASL.
+(define (AddWithCarry x y carry_in)
+  (let ([unsignedSum (+ (bitvector->natural x) (bitvector->natural y) (bitvector->natural carry_in))]
+        [signedSum (+ (bitvector->integer x) (bitvector->integer y) (bitvector->natural carry_in))]
+        [result (extract 63 0 (bv unsignedSum 64))]
+        [n (extract 63 result)]
+        [z (extract (if 
 
-;; This is a pretty big project already with a lot going on, so nothing we do here is
-;; going to be set in stone. The important thing is to get a little more familiar with
-;; ASL and Rosette.
+(bits(N), bits(4)) AddWithCarry(bits(N) x, bits(N) y, bit carry_in)
+    integer unsigned_sum = UInt(x) + UInt(y) + UInt(carry_in);
+    integer signed_sum = SInt(x) + SInt(y) + UInt(carry_in);
+    bits(N) result = unsigned_sum<N-1:0>; // same value as signed_sum<N-1:0>
+    bit n = result<N-1>;
+    bit z = if IsZero(result) then '1' else '0';
+    bit c = if UInt(result) == unsigned_sum then '0' else '1';
+    bit v = if SInt(result) == signed_sum then '0' else '1';
+    return (result, n:z:c:v);
+
+(define (ShiftReg reg type amount state)
+  (let ([typeValue (bitvector->natural type)]
+        [result (vector-ref (aarch64state-regs state) reg)])
+    (cond [(= typeValue 0) (LSL result amount)]
+          [(= typeValue 1) (LSR result amount)]
+          [(= typeValue 2) (ASR result amount)]
+          [(= typeValue 3) (ROR result amount)]
+          [#t 'error])))
+
+(define (LSL_C x shift)
+  (if (> shift 0)
+      (let ([result (bvshl x shift)]
+            [carry_out (extract (- 64 shift) (- 64 shift) x)])
+        (cons result carry_out))
+      'error))
+
+(define (LSL x shift)
+  (if (>= shift 0)
+      (if (= shift 0)
+          x
+          (LSL_C x shift))
+      'error))
+
+(define (LSR_C x shift)
+  (if (> shift 0)
+      (let ([extended (zero-extended x (bitvector (+ shift 64)))]
+            [result (extract (+ 63 shift) shift extended)]
+            [carry_out (extract (- shift 1) (- shift 1) extended)])
+        (cons result carry_out))
+      'error))
+
+(define (LSR x shift)
+  (if (>= shift 0)
+      (if (= shift 0)
+          x
+          (LSR_C x shift))
+      'error))
+
+(define (ASR_C x shift)
+  (if (> shift 0)
+      (let ([extended (sign-extended x (bitvector (+ shift 64)))]
+            [result (extract (+ shift 63) shift extended)]
+            [carry_out (extract (- shift 1) (- shift 1) extended)])
+        (cons result carry_out))
+      'error))
+
+(define (ASR x shift)
+  (if (>= shift 0)
+      (if (= shift 0)
+          x
+          (ASR_C x shift))
+      'error))
+
+(define (ROR_C x shift)
+  (if (!= shift 0)
+      (let* ([m (modulo shift 64)]
+            [result (bvor (car (LSR x m)) (car (LSL x (- 64 m))))]
+            [carry_out (extract 63 result)])
+        (cons result carry_out))
+      'error))
+
+(define (ROR x shift)
+  (if (>= shift 0)
+      (if (= shift 0)
+          x
+          (ROR_C x shift))
+      'error))
