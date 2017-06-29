@@ -46,6 +46,7 @@
 (struct aarch64state (N Z C V regs) #:transparent)
 
 (define (step state prog)
+  ;; decode program instruction by bit disection
   (let* ([rd (extract 4 0 prog)]
          [rn (extract 9 5 prog)]
          [imm6 (extract 15 10 prog)]
@@ -68,6 +69,7 @@
         'error
         (if (and (= (bitvector->natural sf) 0) (= (bitvector->natural (extract 5 5 sf)) 1))
             'error
+            ;; execute stage where we get the first two operands and then calculate the appropriate result
             (let* ([shift_amount (bitvector->natural imm6)]
                    [operand1 (vector-ref (aarch64state-regs state) d)]
                    [operand2 (if (= sub_op #t)
@@ -81,30 +83,31 @@
                    [flagList (cdr result)])
               (begin
                 (if (= setflags #t)
-                    (begin
-                      (set-aarch64state-N state (vector-ref flagList 0))
-                      (set-aarch64state-Z state (vector-ref flagList 1))
-                      (set-aarch64state-C state (vector-ref flagList 2))
-                      (set-aarch64state-V state (vector-ref flagList 3)))
+                    ;; set flags after getting result
+                    (begin aarch64state
+                      (set-aarch64state-N! state (vector-ref flagList 0)) ; syntax is off
+                      (set-aarch64state-Z! state (vector-ref flagList 1)) ; syntax is off
+                      (set-aarch64state-C! (vector-ref flagList 2)) ; syntax is off
+                      (set-aarch64state-V! (vector-ref flagList 3))) ; syntax is off
                     '())
-                (vector-set! state d additionResult)))))))
+                ;; set result register to value 
+                (vector-set! (aarch64state-regs state) d additionResult)))))))
 
 (define (AddWithCarry x y carry_in)
-  (let ([unsignedSum (+ (bitvector->natural x) (bitvector->natural y) (bitvector->natural carry_in))]
+  (let* ([unsignedSum (+ (bitvector->natural x) (bitvector->natural y) (bitvector->natural carry_in))]
         [signedSum (+ (bitvector->integer x) (bitvector->integer y) (bitvector->natural carry_in))]
         [result (extract 63 0 (bv unsignedSum 64))]
         [n (extract 63 result)]
-        [z (extract (if 
-
-(bits(N), bits(4)) AddWithCarry(bits(N) x, bits(N) y, bit carry_in)
-    integer unsigned_sum = UInt(x) + UInt(y) + UInt(carry_in);
-    integer signed_sum = SInt(x) + SInt(y) + UInt(carry_in);
-    bits(N) result = unsigned_sum<N-1:0>; // same value as signed_sum<N-1:0>
-    bit n = result<N-1>;
-    bit z = if IsZero(result) then '1' else '0';
-    bit c = if UInt(result) == unsigned_sum then '0' else '1';
-    bit v = if SInt(result) == signed_sum then '0' else '1';
-    return (result, n:z:c:v);
+        [z (if (= (bitvector->natural result) 0)
+               (bv 1 1)
+               (bv 0 1))]
+        [c (if (= (bitvector->natural result) unsignedSum)
+               (bv 0 1)
+               (bv 1 1))]
+        [v (if (= (bitvector->integer result) signedSum)
+               (bv 0 1)
+               (bv 1 1))])
+    (cons result (list->vector (list n z c v)))))
 
 (define (ShiftReg reg type amount state)
   (let ([typeValue (bitvector->natural type)]
@@ -131,7 +134,7 @@
 
 (define (LSR_C x shift)
   (if (> shift 0)
-      (let ([extended (zero-extended x (bitvector (+ shift 64)))]
+      (let* ([extended (zero-extend x (bitvector (+ shift 64)))]
             [result (extract (+ 63 shift) shift extended)]
             [carry_out (extract (- shift 1) (- shift 1) extended)])
         (cons result carry_out))
@@ -146,7 +149,7 @@
 
 (define (ASR_C x shift)
   (if (> shift 0)
-      (let ([extended (sign-extended x (bitvector (+ shift 64)))]
+      (let* ([extended (sign-extend x (bitvector (+ shift 64)))]
             [result (extract (+ shift 63) shift extended)]
             [carry_out (extract (- shift 1) (- shift 1) extended)])
         (cons result carry_out))
@@ -160,7 +163,7 @@
       'error))
 
 (define (ROR_C x shift)
-  (if (!= shift 0)
+  (if (not (= shift 0))
       (let* ([m (modulo shift 64)]
             [result (bvor (car (LSR x m)) (car (LSL x (- 64 m))))]
             [carry_out (extract 63 result)])

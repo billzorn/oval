@@ -4,7 +4,6 @@
 (struct instr (r1 r2 r3) #:transparent)
 (struct add instr () #:transparent)
 
-
 ;; The state is a fixed-size vector of integers.
 ;; Looking up or mutating a register is just the corresponding vector-ref or vector-set!
 
