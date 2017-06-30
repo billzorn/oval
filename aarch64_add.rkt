@@ -1,5 +1,9 @@
 #lang rosette/safe
 
+;; use this to "throw an exception" instead of returning the symbol 'error
+(define (emulator-undefined)
+  (assert #f 'undefined))
+
 ;; stolen from previous interpreter
 
 (define (build-list n proc)
@@ -43,7 +47,30 @@
 ;; We should do something eventually with the processor state that holds things like
 ;; the flags. That will probably be a struct with a bunch of really short bitvectors in it.
 
-(struct aarch64state (N Z C V regs) #:transparent)
+(struct aarch64state ([N #:mutable]
+                      [Z #:mutable]
+                      [C #:mutable]
+                      [V #:mutable]
+                      regs)
+  #:transparent)
+
+
+;; This is the global state of the emulator - the implementation can access it at will.
+;; To work on multiple states, save the old one somewhere and put in a new one. The
+;; reset function is a good way to get new states, but they aren't symbolic anywhere.
+
+;; initially empty, call reset before doing anything
+(define emulator-state (box '()))
+
+(define (emulator-reset)
+  (set-box! emulator-state
+            (aarch64state (bv 0 1)
+                          (bv 0 1)
+                          (bv 0 1)
+                          (bv 0 1)
+                          (build-vector 31 (lambda (i) (bv 0 64))))))
+
+
 
 (define (step state prog)
   ;; decode program instruction by bit disection
@@ -66,9 +93,9 @@
          [sub_op (= (bitvector->natural op) 1)]
          [setflags (= (bitvector->natural s) 1)])
     (if (= (bitvector->natural shift) 3)
-        'error
+        (emulator-undefined)
         (if (and (= (bitvector->natural sf) 0) (= (bitvector->natural (extract 5 5 sf)) 1))
-            'error
+            (emulator-undefined)
             ;; execute stage where we get the first two operands and then calculate the appropriate result
             (let* ([shift_amount (bitvector->natural imm6)]
                    [operand1 (vector-ref (aarch64state-regs state) d)]
@@ -81,17 +108,14 @@
                    [result (AddWithCarry operand1 operand2 carry_in)]
                    [additionResult (car result)]
                    [flagList (cdr result)])
-              (begin
-                (if (= setflags #t)
-                    ;; set flags after getting result
-                    (begin aarch64state
-                      (set-aarch64state-N! state (vector-ref flagList 0)) ; syntax is off
-                      (set-aarch64state-Z! state (vector-ref flagList 1)) ; syntax is off
-                      (set-aarch64state-C! (vector-ref flagList 2)) ; syntax is off
-                      (set-aarch64state-V! (vector-ref flagList 3))) ; syntax is off
-                    '())
-                ;; set result register to value 
-                (vector-set! (aarch64state-regs state) d additionResult)))))))
+              ; let statements can have multiple bodies (you don't need an explicit (begin ...))
+              (when setflags
+                (set-aarch64state-N! state (vector-ref flagList 0))
+                (set-aarch64state-Z! state (vector-ref flagList 1))
+                (set-aarch64state-C! (vector-ref flagList 2))
+                (set-aarch64state-V! (vector-ref flagList 3)))
+              ;; set result register to value 
+              (vector-set! (aarch64state-regs state) d additionResult))))))
 
 (define (AddWithCarry x y carry_in)
   (let* ([unsignedSum (+ (bitvector->natural x) (bitvector->natural y) (bitvector->natural carry_in))]
@@ -116,21 +140,21 @@
           [(= typeValue 1) (LSR result amount)]
           [(= typeValue 2) (ASR result amount)]
           [(= typeValue 3) (ROR result amount)]
-          [#t 'error])))
+          [#t (emulator-undefined)])))
 
 (define (LSL_C x shift)
   (if (> shift 0)
       (let ([result (bvshl x shift)]
             [carry_out (extract (- 64 shift) (- 64 shift) x)])
         (cons result carry_out))
-      'error))
+      (emulator-undefined)))
 
 (define (LSL x shift)
   (if (>= shift 0)
       (if (= shift 0)
           x
           (LSL_C x shift))
-      'error))
+      (emulator-undefined)))
 
 (define (LSR_C x shift)
   (if (> shift 0)
@@ -138,14 +162,14 @@
             [result (extract (+ 63 shift) shift extended)]
             [carry_out (extract (- shift 1) (- shift 1) extended)])
         (cons result carry_out))
-      'error))
+      (emulator-undefined)))
 
 (define (LSR x shift)
   (if (>= shift 0)
       (if (= shift 0)
           x
           (LSR_C x shift))
-      'error))
+      (emulator-undefined)))
 
 (define (ASR_C x shift)
   (if (> shift 0)
@@ -153,14 +177,14 @@
             [result (extract (+ shift 63) shift extended)]
             [carry_out (extract (- shift 1) (- shift 1) extended)])
         (cons result carry_out))
-      'error))
+      (emulator-undefined)))
 
 (define (ASR x shift)
   (if (>= shift 0)
       (if (= shift 0)
           x
           (ASR_C x shift))
-      'error))
+      (emulator-undefined)))
 
 (define (ROR_C x shift)
   (if (not (= shift 0))
@@ -168,11 +192,11 @@
             [result (bvor (car (LSR x m)) (car (LSL x (- 64 m))))]
             [carry_out (extract 63 result)])
         (cons result carry_out))
-      'error))
+      (emulator-undefined)))
 
 (define (ROR x shift)
   (if (>= shift 0)
       (if (= shift 0)
           x
           (ROR_C x shift))
-      'error))
+      (emulator-undefined)))
