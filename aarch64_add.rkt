@@ -46,6 +46,10 @@
 
 ;; We should do something eventually with the processor state that holds things like
 ;; the flags. That will probably be a struct with a bunch of really short bitvectors in it.
+(struct ShiftType_LSL ())
+(struct ShiftType_LSR ())
+(struct ShiftType_ASR ())
+(struct ShiftType_ROR ())
 
 (struct aarch64state ([N #:mutable]
                       [Z #:mutable]
@@ -71,22 +75,21 @@
                           (build-vector 31 (lambda (i) (bv 0 64))))))
 
 
-
 (define (step state prog)
   ;; decode program instruction by bit disection
   (let* ([rd (extract 4 0 prog)]
          [rn (extract 9 5 prog)]
          [imm6 (extract 15 10 prog)]
          [rm (extract 20 16 prog)]
-         [placeholder (extract 21 21 prog)]
+         [placeholder (bv 0 1)]
          [shift (extract 23 22 prog)]
-         [placeholder2 (extract 28 24 prog)]
-         [s (extract 29 29 prog)]
-         [op (extract 30 30 prog)]
+         [placeholder2 (bv 11 5)]
+         [s (bv 0 1)]
+         [op (bv 1 1)]
          [sf (extract 31 31 prog)]
-         [d (bitvector->natural rd)]
-         [n (bitvector->natural rn)]
-         [m (bitvector->natural rm)]
+         [d (UInt rd)]
+         [n (UInt rn)]
+         [m (UInt rm)]
          [datasize (if (= (bitvector->natural sf) 1)
                        64
                        32)]
@@ -97,106 +100,238 @@
         (if (and (= (bitvector->natural sf) 0) (= (bitvector->natural (extract 5 5 sf)) 1))
             (emulator-undefined)
             ;; execute stage where we get the first two operands and then calculate the appropriate result
-            (let* ([shift_amount (bitvector->natural imm6)]
-                   [operand1 (vector-ref (aarch64state-regs state) d)]
+            (let* ([shift_type (DecodeShift shift)]
+                   [shift_amount (UInt imm6)]
+                   [operand1 (X (aarch64state-regs state) d datasize)]
                    [operand2 (if (= sub_op #t)
-                                 (bvnot (car (ShiftReg m shift shift_amount)))
-                                 (ShiftReg m shift shift_amount))]
+                                 (bvnot (ShiftReg m shift_type shift_amount))
+                                 (ShiftReg m shift_type shift_amount))]
                    [carry_in (if (= sub_op #t)
                                  (bv 1 1)
                                  (bv 0 1))]
                    [result (AddWithCarry operand1 operand2 carry_in)]
                    [additionResult (car result)]
-                   [flagList (cdr result)])
+                   [flags (cdr result)])
               ; let statements can have multiple bodies (you don't need an explicit (begin ...))
               (when setflags
-                (set-aarch64state-N! state (vector-ref flagList 0))
-                (set-aarch64state-Z! state (vector-ref flagList 1))
-                (set-aarch64state-C! (vector-ref flagList 2))
-                (set-aarch64state-V! (vector-ref flagList 3)))
-              ;; set result register to value 
-              (vector-set! (aarch64state-regs state) d additionResult))))))
+                (set-aarch64state-N! state (extract 0 0 flags))
+                (set-aarch64state-Z! state (extract 1 1 flags))
+                (set-aarch64state-C! state (extract 2 2 flags))
+                (set-aarch64state-V! state (extract 3 3 flags)))
+              ;; set result register to value
+              (X! (aarch64state-regs state) d additionResult))))))
+
+
+;; AddWithCarry
+;; ============
 
 (define (AddWithCarry x y carry_in)
-  (let* ([unsignedSum (+ (bitvector->natural x) (bitvector->natural y) (bitvector->natural carry_in))]
-        [signedSum (+ (bitvector->integer x) (bitvector->integer y) (bitvector->natural carry_in))]
-        [result (extract 63 0 (bv unsignedSum 64))]
-        [n (extract 63 result)]
-        [z (if (= (bitvector->natural result) 0)
-               (bv 1 1)
-               (bv 0 1))]
-        [c (if (= (bitvector->natural result) unsignedSum)
-               (bv 0 1)
-               (bv 1 1))]
-        [v (if (= (bitvector->integer result) signedSum)
-               (bv 0 1)
-               (bv 1 1))])
-    (cons result (list->vector (list n z c v)))))
+  (let* ([N (bitvector-size (type-of x))]
+         [unsignedSum (+ (UInt x) (UInt y) (UInt carry_in))]
+         [signedSum (+ (SInt x) (SInt y) (UInt carry_in))]
+         [result (extract (- N 1) 0 (bv unsignedSum N))]
+         [n (extract 63 result)]
+         [z (if (IsZero result)
+                (bv 1 1)
+                (bv 0 1))]
+         [c (if (= (UInt result) unsignedSum)
+                (bv 0 1)
+                (bv 1 1))]
+         [v (if (= (SInt result) signedSum)
+                (bv 0 1)
+                (bv 1 1))])
+    (cons result (concat n z c v))))
+
+
+;; ShiftReg
+;; ===========
 
 (define (ShiftReg reg type amount state)
-  (let ([typeValue (bitvector->natural type)]
-        [result (vector-ref (aarch64state-regs state) reg)])
-    (cond [(= typeValue 0) (LSL result amount)]
-          [(= typeValue 1) (LSR result amount)]
-          [(= typeValue 2) (ASR result amount)]
-          [(= typeValue 3) (ROR result amount)]
+  (let ([result (vector-ref (aarch64state-regs state) reg)])
+    (cond [(ShiftType_LSL? type) (LSL result amount)]
+          [(ShiftType_LSR? type) (LSR result amount)]
+          [(ShiftType_ASR? type) (ASR result amount)]
+          [(ShiftType_ROR? type) (ROR result amount)]
           [#t (emulator-undefined)])))
 
+
+;; UInt()
+;; ======
+
+(define (UInt x)
+  (bitvector->natural x))
+
+
+;; SInt()
+;; ======
+
+(define (SInt x)
+  (bitvector->integer x))
+
+
+;; IsZero()
+;; ========
+
+(define (IsZero x)
+  (= (bitvector->natural x) 0))
+
+
+;; DecodeShift
+;; ===========
+
+(define (DecodeShift op)
+  (let ([value (bitvector->natural op)])
+    (cond [(= value 0) (ShiftType_LSL)]
+          [(= value 1) (ShiftType_LSR)]
+          [(= value 2) (ShiftType_ASR)]
+          [(= value 3) (ShiftType_ROR)]
+          [#t (emulator-undefined)])))
+
+;; LSL_C
+;; ===========
+
 (define (LSL_C x shift)
-  (if (> shift 0)
-      (let ([result (bvshl x shift)]
-            [carry_out (extract (- 64 shift) (- 64 shift) x)])
-        (cons result carry_out))
-      (emulator-undefined)))
+  (let ([N (bitvector-size (type-of x))])
+    (if (> shift 0)
+        (let* ([extended_x (concat x (Zeros shift))]
+               [result (extract (- N 1) 0 extended_x)]
+               [carry_x (extract N N extended_x)])
+          (cons result carry_x))
+        (emulator-undefined))))
+
+
+;; LSL
+;; ===========
 
 (define (LSL x shift)
   (if (>= shift 0)
       (if (= shift 0)
           x
-          (LSL_C x shift))
+          (car (LSL_C x shift)))
       (emulator-undefined)))
 
+
+;; LSR_C
+;; ===========
+
 (define (LSR_C x shift)
-  (if (> shift 0)
-      (let* ([extended (zero-extend x (bitvector (+ shift 64)))]
-            [result (extract (+ 63 shift) shift extended)]
-            [carry_out (extract (- shift 1) (- shift 1) extended)])
-        (cons result carry_out))
-      (emulator-undefined)))
+  (let ([N (bitvector-size (type-of x))])
+    (if (> shift 0)
+        (let* ([extended_x (ZeroExtend x (bitvector (+ shift N)))]
+               [result (extract (+ (- N 1) shift) shift extended_x)]
+               [carry_out (extract (- shift 1) (- shift 1) extended_x)])
+          (cons result carry_out))
+        (emulator-undefined))))
+  
+
+;; LSR
+;; ===========
 
 (define (LSR x shift)
   (if (>= shift 0)
       (if (= shift 0)
           x
-          (LSR_C x shift))
+          (car (LSR_C x shift)))
       (emulator-undefined)))
+
+
+
+;; ASR_C
+;; ===========
 
 (define (ASR_C x shift)
-  (if (> shift 0)
-      (let* ([extended (sign-extend x (bitvector (+ shift 64)))]
-            [result (extract (+ shift 63) shift extended)]
-            [carry_out (extract (- shift 1) (- shift 1) extended)])
-        (cons result carry_out))
-      (emulator-undefined)))
+  (let ([N (bitvector-size (type-of x))])
+    (if (> shift 0)
+        (let* ([extended_x (SignExtend x (+ shift N))]
+               [result (extract (+ shift (- N 1)) shift extended_x)]
+               [carry_out (extract (- shift 1) (- shift 1) extended_x)])
+          (cons result carry_out))
+        (emulator-undefined))))
 
+
+;; ASR
+;; ===========
 (define (ASR x shift)
   (if (>= shift 0)
       (if (= shift 0)
           x
-          (ASR_C x shift))
+          (car (ASR_C x shift)))
       (emulator-undefined)))
 
+
+
+;; ROR_C
+;; ===========
+
 (define (ROR_C x shift)
-  (if (not (= shift 0))
-      (let* ([m (modulo shift 64)]
-            [result (bvor (car (LSR x m)) (car (LSL x (- 64 m))))]
-            [carry_out (extract 63 result)])
-        (cons result carry_out))
-      (emulator-undefined)))
+  (let ([N (bitvector-size (type-of x))])
+    (if (not (= shift 0))
+        (let* ([m (modulo shift N)]
+               [result (bvor (LSR x m) (LSL x (- N m)))]
+               [carry_out (extract (- N 1) result)])
+          (cons result carry_out))
+        (emulator-undefined))))
+
+
+;; ROR
+;; ===========
 
 (define (ROR x shift)
   (if (>= shift 0)
       (if (= shift 0)
           x
-          (ROR_C x shift))
+          (car (ROR_C x shift)))
       (emulator-undefined)))
+
+
+
+;; X[] - assignment form
+;; =====================
+;; Write to general-purpose register from either a 32-bit or a 64-bit value.
+
+(define (X! regs n value)
+  (let ([width (bitvector-size (type-of value))])
+    (if (and (>= n 0) (<= n 31) (or (= width 32) (= width 64)) (not (= n 31)))
+        (vector-set! regs n (ZeroExtend value (bitvector-size (type-of (vector-ref regs n)))))
+        (emulator-undefined))))
+
+
+
+;; X[] - non-assignment form
+;; =========================
+;; Read from general-purpose register with implicit slice of 8, 16, 32 or 64 bits.
+
+(define (X regs n width)
+  (if (and (>= n 0) (<= n 31) (or (= width 8) (= width 16) (= width 32) (= width 64)))
+      (if (not (= n 31))
+          (extract (- width 1) 0 (vector-ref regs n))
+          (Zeros width))
+      (emulator-undefined)))
+
+
+;; Replicate()
+;; ===========
+
+
+;; Zeros()
+;; =======
+
+(define (Zeros N)
+  (bv 0 N))
+
+
+;; ZeroExtend()
+;; ============
+
+(define (ZeroExtend x N)
+  (let ([M (bitvector-size (type-of x))])
+    (if (>= N M)
+        (concat (Zeros (- N M)) x)
+        (emulator-undefined))))
+
+
+;; SignExtend()
+;; ============
+
+(define (SignExtend x N)
+  (sign-extend x (bitvector N)))

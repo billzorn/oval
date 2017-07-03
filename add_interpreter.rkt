@@ -95,6 +95,8 @@
         'equal
         sol)))
 
+(define x (mod 5 6))
+
 ;;TODO:
 ;; implment dan's test case
 	;; add multiple registers
