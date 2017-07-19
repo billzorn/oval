@@ -74,8 +74,27 @@
                           (bv 0 1)
                           (build-vector 31 (lambda (i) (bv 0 64))))))
 
+(define (run prog mutableFlags)
+  (begin
+    (emulator-reset)
+    (set-mutable-flags mutableFlags (length mutableFlags))
+    (run-loop prog (length prog))))
 
-(define (step state prog)
+(define (run-loop prog n)
+  (if (> n 0)
+      (begin
+        (step (car prog))
+        (run (cdr prog) (- n 1)))
+      (box emulator-state)))
+
+(define (set-mutable-flags mutableFlags n)
+  (if (> n 0)
+      (begin (vector-set! (box emulator-state) (car mutableFlags) (symbolic-bv 64))
+             (set-mutable-flags (cdr mutableFlags) (- n 1)))
+      '()))
+
+
+(define (step prog)
   ;; decode program instruction by bit disection
   (let* ([rd (extract 4 0 prog)]
          [rn (extract 9 5 prog)]
@@ -102,7 +121,7 @@
             ;; execute stage where we get the first two operands and then calculate the appropriate result
             (let* ([shift_type (DecodeShift shift)]
                    [shift_amount (UInt imm6)]
-                   [operand1 (X (aarch64state-regs state) d datasize)]
+                   [operand1 (X d datasize)]
                    [operand2 (if (= sub_op #t)
                                  (bvnot (ShiftReg m shift_type shift_amount))
                                  (ShiftReg m shift_type shift_amount))]
@@ -114,12 +133,12 @@
                    [flags (cdr result)])
               ; let statements can have multiple bodies (you don't need an explicit (begin ...))
               (when setflags
-                (set-aarch64state-N! state (extract 0 0 flags))
-                (set-aarch64state-Z! state (extract 1 1 flags))
-                (set-aarch64state-C! state (extract 2 2 flags))
-                (set-aarch64state-V! state (extract 3 3 flags)))
+                (set-aarch64state-N! (box emulator-state) (extract 0 0 flags))
+                (set-aarch64state-Z! (box emulator-state) (extract 1 1 flags))
+                (set-aarch64state-C! (box emulator-state) (extract 2 2 flags))
+                (set-aarch64state-V! (box emulator-state) (extract 3 3 flags)))
               ;; set result register to value
-              (X! (aarch64state-regs state) d additionResult))))))
+              (X! d additionResult))))))
 
 
 ;; AddWithCarry
@@ -146,8 +165,8 @@
 ;; ShiftReg
 ;; ===========
 
-(define (ShiftReg reg type amount state)
-  (let ([result (vector-ref (aarch64state-regs state) reg)])
+(define (ShiftReg reg type amount)
+  (let ([result (vector-ref (aarch64state-regs (box emulator-state)) reg)])
     (cond [(ShiftType_LSL? type) (LSL result amount)]
           [(ShiftType_LSR? type) (LSR result amount)]
           [(ShiftType_ASR? type) (ASR result amount)]
@@ -289,10 +308,11 @@
 ;; =====================
 ;; Write to general-purpose register from either a 32-bit or a 64-bit value.
 
-(define (X! regs n value)
+(define (X! n value)
   (let ([width (bitvector-size (type-of value))])
     (if (and (>= n 0) (<= n 31) (or (= width 32) (= width 64)) (not (= n 31)))
-        (vector-set! regs n (ZeroExtend value (bitvector-size (type-of (vector-ref regs n)))))
+        (vector-set! (aarch64state-regs (box emulator-state)) n
+                     (ZeroExtend value (bitvector-size (type-of (vector-ref (aarch64state-regs (box emulator-state)) n)))))
         (emulator-undefined))))
 
 
@@ -301,10 +321,10 @@
 ;; =========================
 ;; Read from general-purpose register with implicit slice of 8, 16, 32 or 64 bits.
 
-(define (X regs n width)
+(define (X n width)
   (if (and (>= n 0) (<= n 31) (or (= width 8) (= width 16) (= width 32) (= width 64)))
       (if (not (= n 31))
-          (extract (- width 1) 0 (vector-ref regs n))
+          (extract (- width 1) 0 (vector-ref (aarch64state-regs (box emulator-state)) n))
           (Zeros width))
       (emulator-undefined)))
 
